@@ -5,92 +5,30 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views import generic
 from django.http import HttpResponse
 from .utils import CsvIo
-import pandas as pd
-import os
-import numpy as np
+
 
 csv.register_dialect('csv', delimiter='|')
-
-def get_from_csv():
-	path = '/csv_source/'
-	mgt = 'gt_network_prefix_map.csv'
-	mccmnc ='mcc_mnc_map.csv'
-	file_mgt = os.path.join(path, mgt)
-	file_mccmnc = os.path.join(path, mccmnc)
-	encod = 'utf8'
-
-	#Read MGT
-	dtypes = {'gt': 'str', 'mcc': 'str','mnc': 'str', 'name': 'str'}
-	df_gt = pd.read_csv(file_mgt,header=None,  names=['gt','mcc','mnc','name'], sep='|',dtype=dtypes, encoding = encod)
-	#set Index
-	#df_gt = df_gt['mnc'].fillna('')
-	#remove white space
-	df_gt.loc[df_gt['mnc'] == '' , ['mnc']] = ' '
-	#df_gt = df_gt['mnc'].fillna(' ')
-	df_gt['mccmnc'] = df_gt['mcc'] + df_gt['mnc']
-	df_gt = df_gt.set_index(['mccmnc'], append=False)
-
-	#Read mccmnc
-	dtypes = {'mcc': 'str', 'mnc': 'str', 'country': 'str', 'name': 'str'}
-	df_mnc = pd.read_csv(file_mccmnc,header=None, names=['mcc','mnc','country','name'], sep='|', dtype=dtypes, encoding = encod)
-	#remove white space
-	df_mnc.loc[df_mnc['mnc'] == '' , ['mnc']] = ' '
-	#df_mnc = df_mnc['mnc'].fillna(' ')
-
-
-	#set Index
-	df_mnc['mccmnc'] = df_mnc['mcc'] + df_mnc['mnc']
-	df_mnc = df_mnc.set_index(['mccmnc'], append=False)
-
-	#df_gt.join(df_mnc,how='left')
-	df_web = df_mnc.join(df_gt,how='outer',lsuffix='_l', rsuffix='_r')
-	#slice so we get data for json for jquery table
-	df_web = df_web[["mcc_l","mnc_l","country","name_l","gt"]]
-	df_web =df_web.reset_index()
-	#df_web.reset_index(level=0, inplace=True)
-	df_web = df_web.rename(columns={'mcc_l': 'mcc', 'mnc_l': 'mnc', 'name_l': 'operator', 'gt': 'number'})
-	df_web['mnc'] = df_web['mnc'].fillna('')
-	df_web['mcc'] = df_web['mcc'].fillna('')
-	df_web['country'] = df_web['country'].fillna('')
-	df_web['operator'] = df_web['operator'].fillna('')
-	return df_web
-	
-	
-def save_to_csv(df):
-	path = './csv_source/'
-	mgt = 'gt_network_prefix_map.csv'
-	mccmnc ='mcc_mnc_map.csv'
-	file_mgt = os.path.join(path, mgt)
-	file_mccmnc = os.path.join(path, mccmnc)
-	encod = 'utf8'
-	print "save"
-	#df['mnc'] = df['mnc'].fillna('')
-	df['mcc'] = df['mcc'].fillna('')
-	df['country'] = df['country'].fillna('')
-	df['operator'] = df['operator'].fillna('')
-	df.dropna()	#get unique mcc mnc and remove empty number rows
-	print df
-	#df['mccmnc'] = df['mcc'] + df['mnc']
-	mcc_mnc_from_web = df.drop_duplicates(['mccmnc'])
-	print mcc_mnc_from_web
-	mcc_mnc_from_web.to_csv(file_mccmnc, sep='|', encoding='utf-8', header=False, index= False, columns=["mcc","mnc","country","operator"])
-	#remove rows with empty number
-	df.dropna(subset=['number'], inplace=True)
-	print df
-	df.to_csv(file_mgt, sep='|', encoding='utf-8', header=False, index= False, columns=["number","mcc","mnc","operator"])
-
-	
-	
 
 
 class JsonTableView(LoginRequiredMixin, generic.ListView):
 
     def get(self, request):
-	
-	df = get_from_csv()
-	# create json for jquery table....
-	to_web = df.to_json(path_or_buf = None, orient = 'records',force_ascii = True, double_precision= False)
-        return HttpResponse(to_web, content_type="application/json")
+        mcc_mnc_map_objects = CsvIo().get_mcc_mnc_map()
+        network_prefix_objects = CsvIo().get_gt_network_prefix_map()
+        common_map = []
+        for item_map in mcc_mnc_map_objects:
+            if item_map[0].isdigit() and item_map[1].isdigit():
+                has_number = False
+                for item in network_prefix_objects:
+                    if int(item[1]) == int(item_map[0]) and int(item[2]) == int(item_map[1]):
+                        common_map.append([item_map[0], item_map[1], item_map[3], item_map[2], item[0]])
+                        has_number = True
+                if not has_number:
+                    common_map.append([item_map[0], item_map[1], item_map[3], item_map[2], ""])
+        results = []
+        for i in common_map:
+            results.append({"mcc": i[0], "mnc": i[1], "operator": i[2], "country": i[3], "number": i[4]})
+        return HttpResponse(json.dumps(results, encoding="utf-8"), content_type="application/json")
 
 
 class IndexView(LoginRequiredMixin, generic.TemplateView):
@@ -102,326 +40,183 @@ class IndexView(LoginRequiredMixin, generic.TemplateView):
 class AddFormView(LoginRequiredMixin, generic.View):
     def post(self, request, *args, **kwargs):
         if len(request.POST["mcc"]) != 0 and len(request.POST['mnc']) != 0:
-            class HelperClass:
-                pass
-			#get data frame
-            df  = get_from_csv()
-            #Only need to 0 pad mnc
+            mcc_mnc_map_list = CsvIo().get_mcc_mnc_map()
+            network_prefix_list = CsvIo().get_gt_network_prefix_map()
             request_dict = dict(request.POST)
             request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
             if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-                request_dict["mnc"] = "0"+request_dict["mnc"]                
-    			
-    		#Add operator mcc + mnc from web form.
-            web_mnc = request_dict["mnc"]
-            web_mcc = request_dict["mcc"]
-            web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-            	
-            #and optional parameters
-            web_number = request_dict["number"]
-            web_country = request_dict["country"]
-            web_operator = request_dict["operator"]
-         
-            if df[(df['mcc']+df['mnc'] == web_mccmnc) & (df['number'] == web_number)].shape[0] > 0 :
-            	return HttpResponse("Row allready added for this MCC, MNC and MGT use edit to change ")
+                request_dict["mnc"] = "0"+request_dict["mnc"]
+            if request_dict["mcc"].isdigit() and len(request_dict["mcc"]) == 1:
+                request_dict["mcc"] = "0" + request_dict["mcc"]
+            for iter_map in mcc_mnc_map_list:
+                if request_dict["mcc"] == iter_map[0] and \
+                                request_dict["mnc"] == iter_map[1] and len(request_dict["number"]) == 0:
+                    return HttpResponse("such mcc and mnc is already exist")
+            mcc_mnc_row_holder = []
+            is_in_mcc_mnc_map = False
+            is_in_gt_net_map = False
+            for iter_map in mcc_mnc_map_list:
+                if request_dict["mcc"] == iter_map[0] and request_dict["mnc"] == iter_map[1]:
+                    mcc_mnc_row_holder = iter_map
+                    is_in_mcc_mnc_map = True
+            if is_in_mcc_mnc_map:
+                for iter in network_prefix_list:
+                    if request_dict["number"].encode("utf-8") in iter and mcc_mnc_row_holder[0] == iter[1].encode() and mcc_mnc_row_holder[1] == iter[2].encode():
+                        is_in_gt_net_map = True
             else:
-            	#rockenroll lets add row.
-            	df_add = pd.DataFrame ({'mcc': [web_mcc],
-                         				'mnc': [web_mnc],
-                         				'operator': [web_operator],
-                         				'country': [web_country],
-                         				'number': [web_number]
-                         				})
-                df = pd.concat([df_add,df])
-                #names are global so update all rows:
-                #update country changes all
-                df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-                #update operator names
-                df.loc[df['mccmnc'] == web_mccmnc, 'name'] = web_operator
-                save_to_csv(df)
+                request_dict["mcc"] = str(int(request_dict["mcc"]))
+                if len(request_dict["mcc"]) == 1:
+                    request_dict["mcc"] = "0"+request_dict["mcc"]
+                request_dict["mnc"] = str(int(request_dict["mnc"]))
+                if len(request_dict["mnc"]) == 1:
+                    request_dict["mnc"] = "0" + request_dict["mnc"]
+                mcc_mnc_map_list.append([request_dict["mcc"], request_dict["mnc"], request_dict["country"],
+                                            request_dict["operator"]])
 
-        return HttpResponse("Data was successfully added ")
-       
-
-
-class EditFormView(LoginRequiredMixin, generic.View):
-    def post(self, request, *args, **kwargs):
-		#get data frame
-		df  = get_from_csv()
-		# only need to 0 pad mnc
-		request_dict = dict(request.POST)
-		request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
-		if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-			request_dict["mnc"] = "0"+request_dict["mnc"]                
-		if request_dict["mnc"] == '':
-			request_dict["mnc"] = ' '             	
-		#Add operator mcc + mnc from web form.
-		web_mnc = request_dict["mnc"]
-		web_mcc = request_dict["mcc"]
-		web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-			
-		#and optional parameters
-		web_number = request_dict["number"]
-		web_country = request_dict["country"]
-		web_operator = request_dict["operator"]
-		web_old_number = request_dict["which_number"]
-	 
-		print df
-
-		#Did the number allready exist for a operator?
-		if df[(df['mcc']+ df['mnc'] == web_mccmnc) & (df['number'] == web_number)].shape[0] > 0 :
-			#update only country and names
-			df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-			df.loc[df['mccmnc'] == web_mccmnc, 'operator'] = web_operator
-			print "TIEM TO SAVE"
-			print df
-			save_to_csv(df)
-			return HttpResponse("Record is successfully edited. Updated only names!")
-		else:
-			print web_operator
-			print web_mccmnc
-			print web_old_number
-
-			#update old row with new number from web form
-			df.loc[(df['mccmnc'] == web_mccmnc) & (df['number'] == web_old_number), 'number'] = web_number
-			#update countries and operator names
-			df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-			df.loc[df['mccmnc'] == web_mccmnc, 'operator'] = web_operator
-			print df
-			save_to_csv(df)
-			return HttpResponse("Record is successfully edited")
-
-
-
-class DeleteFormView(LoginRequiredMixin, generic.View):
-
-    def post(self, request, *args, **kwargs):
-		#get data frame
-		df  = get_from_csv()
-		# only need to 0 pad mnc
-		request_dict = dict(request.POST)
-		request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
-		if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-			request_dict["mnc"] = "0"+request_dict["mnc"]                
-			
-		#Add operator mcc + mnc from web form.
-		web_mnc = request_dict["mnc"]
-		web_mcc = request_dict["mcc"]
-		web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-			
-		#and optional parameters
-		web_number = request_dict["number"]
-		web_country = request_dict["country"]
-		web_operator = request_dict["operator"]
-		web_old_number = request_dict["which_number"]
-		
-		#find the row and delete 
-		row = df[(df['number'] == web_old_number) & (df['mccmnc'] == web_mccmnc)].index
-		del_row = df.index.isin(row)
-		df = df[~del_row]
-		print df
-		save_to_csv(df)
-		return HttpResponse("Record was successfully deleted")
-
-# -*- coding: utf-8 -*-
-import json
-import csv
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.views import generic
-from django.http import HttpResponse
-from .utils import CsvIo
-import pandas as pd
-import os
-import numpy as np
-
-csv.register_dialect('csv', delimiter='|')
-
-def get_from_csv():
-	path = './csv_source/'
-	mgt = 'gt_network_prefix_map.csv'
-	mccmnc ='mcc_mnc_map.csv'
-	file_mgt = os.path.join(path, mgt)
-	file_mccmnc = os.path.join(path, mccmnc)
-	encod = 'utf8'
-
-	#Read MGT
-	dtypes = {'gt': 'str', 'mcc': 'str','mnc': 'str', 'name': 'str'}
-	df_gt = pd.read_csv(file_mgt,header=None,  names=['gt','mcc','mnc','name'], sep='|',dtype=dtypes, encoding = encod)
-	#set Index
-	#df_gt = df_gt['mnc'].fillna('')
-
-	df_gt['mccmnc'] = df_gt['mcc'] + df_gt['mnc']
-	df_gt = df_gt.set_index(['mccmnc'], append=False)
-
-
-	#Read mccmnc
-	dtypes = {'mcc': 'str', 'mnc': 'str', 'country': 'str', 'name': 'str'}
-	df_mnc = pd.read_csv(file_mccmnc,header=None, names=['mcc','mnc','country','name'], sep='|', dtype=dtypes, encoding = encod)
-
-	#set Index
-	df_mnc['mccmnc'] = df_mnc['mcc'] + df_mnc['mnc']
-	df_mnc = df_mnc.set_index(['mccmnc'], append=False)
-
-
-	#df_gt.join(df_mnc,how='left')
-	df_web = df_mnc.join(df_gt,how='outer',lsuffix='_l', rsuffix='_r')
-
-	#slice so we get data for json for jquery table
-	df_web = df_web[["mcc_l","mnc_l","country","name_l","gt"]]
-	df_web =df_web.reset_index()
-	#df_web.reset_index(level=0, inplace=True)
-	df_web = df_web.rename(columns={'mcc_l': 'mcc', 'mnc_l': 'mnc', 'name_l': 'operator', 'gt': 'number'})
-	df_web = df_web.fillna('')
-	return df_web
-	
-	
-def save_to_csv(df):
-	path = './csv_source/'
-	mgt = 'gt_network_prefix_map.csv'
-	mccmnc ='mcc_mnc_map.csv'
-	file_mgt = os.path.join(path, mgt)
-	file_mccmnc = os.path.join(path, mccmnc)
-	encod = 'utf8'
-	df = df.fillna('')
-	#get unique mcc mnc
-	df['mccmnc'] = df['mcc'] + df['mnc']
-	mcc_mnc_from_web = df.drop_duplicates(['mccmnc'])
-	mcc_mnc_from_web.to_csv(file_mccmnc, sep='|', encoding='utf-8', header=False, index= False, columns=["mcc","mnc","country","operator"])
-	df.to_csv(file_mgt, sep='|', encoding='utf-8', header=False, index= False, columns=["number","mcc","mnc","operator"])
-
-	
-	
-
-
-class JsonTableView(LoginRequiredMixin, generic.ListView):
-
-    def get(self, request):
-	
-	df = get_from_csv()
-	# create json for jquery table....
-	to_web = df.to_json(path_or_buf = None, orient = 'records',force_ascii = True, double_precision= False)
-        return HttpResponse(to_web, content_type="application/json")
-
-
-class IndexView(LoginRequiredMixin, generic.TemplateView):
-    login_url = 'login'
-    redirect_field_name = 'redirect_to'
-    template_name = 'csv_table/index.html'
-
-
-class AddFormView(LoginRequiredMixin, generic.View):
-    def post(self, request, *args, **kwargs):
-        if len(request.POST["mcc"]) != 0 and len(request.POST['mnc']) != 0:
-            class HelperClass:
-                pass
-			#get data frame
-            df  = get_from_csv()
-            #Only need to 0 pad mnc
-            request_dict = dict(request.POST)
-            request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
-            if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-                request_dict["mnc"] = "0"+request_dict["mnc"]                
-    			
-    		#Add operator mcc + mnc from web form.
-            web_mnc = request_dict["mnc"]
-            web_mcc = request_dict["mcc"]
-            web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-            	
-            #and optional parameters
-            web_number = request_dict["number"]
-            web_country = request_dict["country"]
-            web_operator = request_dict["operator"]
-         
-            if df[(df['mcc']+df['mnc'] == web_mccmnc) & (df['number'] == web_number)].shape[0] > 0 :
-            	return HttpResponse("Row allready added for this MCC, MNC and MGT use edit to change ")
+            if is_in_gt_net_map:
+                return HttpResponse("such record is already exists")
             else:
-            	#rockenroll lets add row.
-            	df_add = pd.DataFrame ({'mcc': [web_mcc],
-                         				'mnc': [web_mnc],
-                         				'operator': [web_operator],
-                         				'country': [web_country],
-                         				'number': [web_number]
-                         				})
-                df = pd.concat([df_add,df])
-                #names are global so update all rows:
-                #update country changes all
-                df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-                #update operator names
-                df.loc[df['mccmnc'] == web_mccmnc, 'name'] = web_operator
-                save_to_csv(df)
+                request_dict["mcc"] = str(int(request_dict["mcc"]))
+                if len(request_dict["mcc"]) == 1:
+                    request_dict["mcc"] = "0" + request_dict["mcc"]
+                request_dict["mnc"] = str(int(request_dict["mnc"]))
+                if len(request_dict["mnc"]) == 1:
+                    request_dict["mnc"] = "0" + request_dict["mnc"]
+                if len(mcc_mnc_row_holder) != 0 and len(request_dict["number"]) != 0:
+                    network_prefix_list.append([request_dict["number"], request_dict["mcc"], request_dict["mnc"],
+                                               mcc_mnc_row_holder[3]])
+                else:
+                    if len(request_dict["number"]) != 0:
+                        network_prefix_list.append([request_dict["number"], request_dict["mcc"], request_dict["mnc"],
+                                                    request_dict["operator"]])
+            mcc_res = CsvIo().save_mcc_mnc_map(mcc_mnc_map_list)
+            if len(request_dict["number"]) != 0:
+                gt_network_res = CsvIo().save_gt_network_prefix_map(network_prefix_list)
+                if gt_network_res is False or mcc_res is False:
+                    return HttpResponse("Incorrect request...Data was not added!")
 
-        return HttpResponse("Data was successfully added ")
-       
+            return HttpResponse("Data was successfully added")
+        else:
+            return HttpResponse("mcc and mnc parameters are required... Data was not added!")
 
 
 class EditFormView(LoginRequiredMixin, generic.View):
     def post(self, request, *args, **kwargs):
         if len(request.POST["mcc"]) != 0 and len(request.POST['mnc']) != 0:
-			#get data frame
-            df  = get_from_csv()
-            # only need to 0 pad mnc
+            mcc_mnc_map_list = CsvIo().get_mcc_mnc_map()
+            network_prefix_list = CsvIo().get_gt_network_prefix_map()
             request_dict = dict(request.POST)
+            mcc_mnc_row_holder = []
             request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
             if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-                request_dict["mnc"] = "0"+request_dict["mnc"]                
-    			
-    		#Add operator mcc + mnc from web form.
-            web_mnc = request_dict["mnc"]
-            web_mcc = request_dict["mcc"]
-            web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-            	
-            #and optional parameters
-            web_number = request_dict["number"]
-            web_country = request_dict["country"]
-            web_operator = request_dict["operator"]
-            web_old_number = request_dict["which_number"]
-         
-            
-            #Did the number allready exist for a operator?
-            if df[(df['mcc']+df['mnc'] == web_mccmnc) & (df['number'] == web_number)].shape[0] > 0 :
-            	#update only country and names
-            	df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-            	df.loc[df['mccmnc'] == web_mccmnc, 'operator'] = web_operator
-            	print df
-            	save_to_csv(df)
-            	return HttpResponse("Record is successfully edited. Updated only names!")
-            else:
-            	#update old row with new number from web form
-            	df.loc[(df['mccmnc'] == web_mccmnc) & (df['number'] == web_old_number), 'number'] = web_number
-            	#update countries and operator names
-            	df.loc[df['mcc'] == web_mcc, 'country'] = web_country
-            	df.loc[df['mccmnc'] == web_mccmnc, 'operator'] = web_operator
-            	print df
-            	save_to_csv(df)
-            	return HttpResponse("Record is successfully edited")
+                request_dict["mnc"] = "0" + request_dict["mnc"]
+            if request_dict["mcc"].isdigit() and len(request_dict["mcc"]) == 1:
+                request_dict["mcc"] = "0" + request_dict["mcc"]
+            is_in_mcc = False
+            for iter_map in mcc_mnc_map_list:
+                if request_dict["mcc"].encode() == iter_map[0] and \
+                                request_dict["mnc"].encode() == iter_map[1]:
+                    is_in_mcc = True
+                    if request_dict["country"] != iter_map[2]:
+                        iter_map[2] = str(request_dict["country"])
+                    if request_dict["operator"] != iter_map[3]:
+                        iter_map[3] = str(request_dict["operator"])
+                    mcc_mnc_row_holder = iter_map
+            is_in_gt_network = False
+            for iter in network_prefix_list:
+                if is_in_mcc:
+                    if not is_in_gt_network:
+                        if request_dict["operator"].encode() != iter[3] and request_dict["mcc"].encode() == iter[1] \
+                                and request_dict["mnc"].encode() == iter[2]:
+                            iter[3] = request_dict["operator"]
+                        if iter[0].isdigit() and len(iter[0]) > 0:
+                            if str(request_dict["which_number"]) == str(iter[0]) and\
+                                            int(request_dict["mcc"].encode()) == int(iter[1]) and\
+                                                int(request_dict["mnc"]) == int(iter[2]):
+                                iter[0] = request_dict["number"]
+                                iter[3] = mcc_mnc_row_holder[3]
+                                is_in_gt_network = True
+                        else:
+                            if len(request_dict["which_number"].encode()) == iter[0] and\
+                                            int(request_dict["mcc"].encode()) == int(iter[1])and\
+                                                int(request_dict["mnc"]) == int(iter[2]):
+                                iter[0] = request_dict["which_number"]
+                                iter[3] = mcc_mnc_row_holder[3]
+                                is_in_gt_network = True
+                    else:
+                        if int(request_dict["mcc"].encode()) == int(iter[1]) and \
+                                        int(request_dict["mnc"].encode()) == int(iter[2]):
+                            if len(mcc_mnc_row_holder) != 0:
+                                iter[3] = mcc_mnc_row_holder[3]
+                            else:
+                                iter[3] = request_dict["operator"]
+                else:
+                    return HttpResponse("No such mcc/mnc, try to add them before edit")
+            if is_in_mcc and not is_in_gt_network and len(request_dict["number"].encode()) != 0:
+                network_prefix_list.append([request_dict['number'].encode(), request_dict['mcc'].encode(),
+                                            request_dict['mnc'].encode(), request_dict['operator'].encode()])
+            mcc_res = CsvIo().save_mcc_mnc_map(mcc_mnc_map_list)
+            gt_network_res = CsvIo().save_gt_network_prefix_map(network_prefix_list)
+
+            if gt_network_res is False or mcc_res is False:
+                return HttpResponse("Incorrect request...Data was not edited!")
+
+            return HttpResponse("Record is successfully edited")
+        else:
+            return HttpResponse("Incorrect request...Data was not edited!")
 
 
 class DeleteFormView(LoginRequiredMixin, generic.View):
 
     def post(self, request, *args, **kwargs):
-		#get data frame
-		df  = get_from_csv()
-		# only need to 0 pad mnc
-		request_dict = dict(request.POST)
-		request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
-		if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
-			request_dict["mnc"] = "0"+request_dict["mnc"]                
-			
-		#Add operator mcc + mnc from web form.
-		web_mnc = request_dict["mnc"]
-		web_mcc = request_dict["mcc"]
-		web_mccmnc = request_dict["mcc"] + request_dict["mnc"]
-			
-		#and optional parameters
-		web_number = request_dict["number"]
-		web_country = request_dict["country"]
-		web_operator = request_dict["operator"]
-		web_old_number = request_dict["which_number"]
-		
-		#find the row and delete 
-		row = df[(df['number'] == web_old_number) & (df['mccmnc'] == web_mccmnc)].index
-		del_row = df.index.isin(row)
-		df = df[~del_row]
-		print df
-		save_to_csv(df)
-		return HttpResponse("Record was successfully deleted")
+
+        mcc_mnc_map_list = CsvIo().get_mcc_mnc_map()
+        network_prefix_list = CsvIo().get_gt_network_prefix_map()
+
+        request_dict = dict(request.POST)
+        request_dict = {k: ''.join([x for x in v]) for k, v in request_dict.items()}
+        if request_dict["mnc"].isdigit() and len(request_dict["mnc"]) == 1:
+            request_dict["mnc"] = "0" + request_dict["mnc"]
+        if request_dict["mcc"].isdigit() and len(request_dict["mcc"]) == 1:
+            request_dict["mcc"] = "0" + request_dict["mcc"]
+
+        network_prefix_result = []
+        mcc_mnc_map_result = []
+
+        double_number_counter = 0
+        mcc_mnc_repeats_counter = 0
+        for iter in network_prefix_list:
+            if int(request_dict["mcc"].encode()) == int(iter[1]) and \
+                            int(request_dict["mnc"].encode()) == int(iter[2]):
+                mcc_mnc_repeats_counter += 1
+            if request_dict["which_number"].encode() != iter[0]:
+                network_prefix_result.append(iter)
+            else:
+                if double_number_counter < 1:
+                    if request_dict["mcc"].encode() != iter[1] and request_dict["mnc"].encode() != iter[2]:
+                        network_prefix_result.append(iter)
+                    else:
+                        # skip only one record if there are duplicates
+                        double_number_counter += 1
+                else:
+                    network_prefix_result.append(iter)
+
+        for iter_map in mcc_mnc_map_list:
+            if mcc_mnc_repeats_counter > 1:
+                mcc_mnc_map_result.append(iter_map)
+            else:
+                if iter_map[0].isdigit() and iter_map[1].isdigit():
+                    if str(int(request_dict["mcc"].encode())) != str(int(iter_map[0])) or\
+                                    str(int(request_dict["mnc"].encode())) != str(int(iter_map[1])):
+                        mcc_mnc_map_result.append(iter_map)
+                else:
+                    if request_dict["mcc"].encode != iter_map[0] or request_dict["mnc"].encode() != iter_map[1]:
+                        mcc_mnc_map_result.append(iter_map)
+
+        mcc_res = CsvIo().save_mcc_mnc_map(mcc_mnc_map_result)
+        gt_network_res = CsvIo().save_gt_network_prefix_map(network_prefix_result)
+
+        if gt_network_res is False or mcc_res is False:
+            return HttpResponse("Incorrect request...Data was not deleted!")
+
+        return HttpResponse("Record was successfully deleted")
